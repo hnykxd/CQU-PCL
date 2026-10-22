@@ -62,7 +62,7 @@ export async function installPackFiles(pack, gameDir, settings, context) {
   }
   let done = 0;
   await mapLimit(files, settings.concurrency || 6, async file => {
-    await download(file.urls, safePath(gameDir, file.path), { hashes: file.hashes, signal, headers: file.headers });
+    await download(file.urls, safePath(gameDir, file.path), { hashes: file.hashes, signal, headers: file.headers, size: file.fileSize, connections: Math.min(4, settings.concurrency || 6), tracker: context.tracker });
     done++; update(`下载整合包文件 · ${done}/${files.length}`, 75 + 22 * done / Math.max(1, files.length));
   }, signal);
   update('写入整合包配置', 98);

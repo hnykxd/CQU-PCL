@@ -28,6 +28,7 @@ if (!development) {
   await fs.copyFile(path.join(root, 'node_modules/adm-zip/LICENSE'), path.join(output, 'server/adm-zip.LICENSE.txt'));
   await fs.copyFile(path.join(root, 'node_modules/express/LICENSE'), path.join(output, 'server/express.LICENSE.txt'));
   await fs.copyFile(path.join(root, 'node_modules/undici/LICENSE'), path.join(output, 'server/undici.LICENSE.txt'));
+  await fs.copyFile(path.join(root, 'node_modules/smol-toml/LICENSE'), path.join(output, 'server/smol-toml.LICENSE.txt'));
   const zip = new AdmZip(); zip.addLocalFolder(output); zip.writeZip(path.join(cache, 'native-payload.zip'));
   resourceArgs.push('/resource:' + path.join(cache, 'native-payload.zip') + ',payload.zip');
 }

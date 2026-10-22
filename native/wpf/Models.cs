@@ -46,6 +46,17 @@ namespace CquPcl.Native {
         public double progress { get; set; }
         public string stage { get; set; }
         public string error { get; set; }
+        public string currentFile { get; set; }
+        public List<DownloadFile> activeFiles { get; set; }
+        public double downloadedBytes { get; set; }
+        public double speedBytesPerSecond { get; set; }
+        public int connections { get; set; }
+    }
+    public class DownloadFile {
+        public string fileName { get; set; }
+        public double receivedBytes { get; set; }
+        public double totalBytes { get; set; }
+        public int connections { get; set; }
     }
     public class Mod {
         public string fileName { get; set; }
@@ -53,6 +64,10 @@ namespace CquPcl.Native {
         public string versionNumber { get; set; }
         public string latestId { get; set; }
         public string latestVersion { get; set; }
+        public string source { get; set; }
+        public bool? enabled { get; set; }
+        public bool? recognized { get; set; }
+        public string warning { get; set; }
     }
     public class Pack {
         public string token { get; set; }

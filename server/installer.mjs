@@ -44,7 +44,7 @@ export async function installGame(instance, directory, settings, context) {
   const meta = manifest.versions.find(v => v.id === instance.minecraft);
   if (!meta) throw new Error(`Minecraft ${instance.minecraft} 不在官方版本列表中`);
   const versionJson = safePath(folder.root, `versions/${instance.minecraft}/${instance.minecraft}.json`);
-  await download(meta.url, versionJson, { hashes: { sha1: meta.sha1 }, source: settings.source, signal });
+  await download(meta.url, versionJson, { hashes: { sha1: meta.sha1 }, source: settings.source, signal, tracker: context.tracker });
   let resolved = await Version.parse(folder, instance.minecraft);
   const javaMajor = resolved.javaVersion?.majorVersion || 8;
   const javaPath = await ensureJava(instance, directory, settings, context, javaMajor);
@@ -56,7 +56,9 @@ export async function installGame(instance, directory, settings, context) {
       await mapLimit(files, settings.concurrency || 6, async file => {
         // Upgrade archival Maven URLs to HTTPS before selecting mirrors.
         const urls = file.urls.map(u => u.replace(/^http:\/\//, 'https://'));
-        await download(urls, file.path, { hashes: file.checksum ? { [file.checksum.algorithm]: file.checksum.value } : {}, source: settings.source, signal });
+        await download(urls, file.path, { hashes: file.checksum ? { [file.checksum.algorithm]: file.checksum.value } : {}, source: settings.source, signal,
+          size: file.size, connections: Math.min(4, settings.concurrency || 6), tracker: context.tracker,
+          onProgress: (bytes, total) => update(`${stage} · ${complete}/${files.length}`, low + (high - low) * (complete + (total ? bytes / total : 0)) / Math.max(1, files.length)) });
         complete++; update(`${stage} · ${complete}/${files.length}`, low + (high - low) * complete / Math.max(1, files.length));
       }, signal);
     },

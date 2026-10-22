@@ -109,7 +109,7 @@ export async function ensureJava(instance, directory, settings, context, major, 
     try {
       await mapLimit(files, Math.min(8, Math.max(2, settings.concurrency || 6)), async file => {
         // Compute candidates when a worker starts, after any earlier mirror failure.
-        const transferOptions = { hashes: { sha1: file.sha1 }, signal, fetcher, attempts: 1, headerTimeoutMs, idleTimeoutMs,
+        const transferOptions = { hashes: { sha1: file.sha1 }, signal, fetcher, attempts: 1, headerTimeoutMs, idleTimeoutMs, size: file.size, connections: Math.min(4, settings.concurrency || 6), tracker: context.tracker,
           onAttempt: ({ url }) => { progress.set(file.destination, 0); active.set(file.destination, { url, started: Date.now() }); report(true); },
           onFailure: event => { progress.set(file.destination, 0); failed(event); },
           onProgress: bytes => { progress.set(file.destination, bytes); report(); }
@@ -141,7 +141,7 @@ export async function ensureJava(instance, directory, settings, context, major, 
     let message = `连接 Java ${major} 备用下载源`, started = Date.now();
     const timer = setInterval(() => update(`${message} · ${Math.floor((Date.now() - started) / 1000)} 秒`, 9), 1000);
     try {
-      await download(pkg.link, archive, { hashes: { sha256: pkg.checksum }, signal, fetcher, attempts: 1, headerTimeoutMs, idleTimeoutMs,
+      await download(pkg.link, archive, { hashes: { sha256: pkg.checksum }, signal, fetcher, attempts: 1, headerTimeoutMs, idleTimeoutMs, size: pkg.size, connections: Math.min(4, settings.concurrency || 6), tracker: context.tracker,
         onAttempt: ({ url }) => { message = `连接 Java ${major} · ${sourceName(url)}`; started = Date.now(); update(message, 9); }, onFailure: failed,
         onProgress: (bytes, total) => { message = `下载 Java ${major} · ${mb(bytes)}${total ? '/' + mb(total) : ''} MB`; update(message, 9 + (total ? bytes / total * 9 : 0)); }
       });

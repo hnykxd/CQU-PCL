@@ -101,7 +101,7 @@ async function requestOnce(url, options) {
   for (let redirects = 0; redirects < 8; redirects++) {
     const remaining = headerDeadline - Date.now();
     if (remaining <= 0) throw timeoutError(new URL(current).hostname, 'headers');
-    const response = await fetchWithIdleTimeout(current, { ...options, headerTimeoutMs: remaining, redirect: 'manual', headers: { 'User-Agent': USER_AGENT, ...options.headers } });
+    const response = await fetchWithIdleTimeout(current, { ...options, headerTimeoutMs: remaining, redirect: 'manual', headers: { 'User-Agent': USER_AGENT, ...Object.fromEntries(new Headers(options.headers)) } });
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       await response.body?.cancel();
       const next = validateUrl(new URL(response.headers.get('location'), current).href);
@@ -153,7 +153,57 @@ export async function hashFile(file, algorithm = 'sha1') {
   return hash.digest('hex');
 }
 
-export async function download(urls, target, { hashes = {}, source = 'official', signal, onProgress, onAttempt, onFailure, headers, attempts = 3, retryDelayMs = 1000, headerTimeoutMs, idleTimeoutMs, fetcher } = {}) {
+function rangeError(target) { return Object.assign(new Error(`下载源未提供一致的分段数据：${path.basename(target)}`), { code: 'RANGE_UNSUPPORTED' }); }
+
+async function downloadRanges(url, temp, target, total, count, validator, options, notify) {
+  const controller = new AbortController();
+  const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
+  const handle = await fs.open(temp, 'w');
+  try { await handle.truncate(total); } finally { await handle.close(); }
+  const progress = Array(count).fill(0);
+  let failure;
+  await Promise.all(Array.from({ length: count }, async (_, index) => {
+    const start = Math.floor(total * index / count), end = Math.floor(total * (index + 1) / count) - 1;
+    try {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          signal.throwIfAborted(); progress[index] = 0; notify(progress.reduce((a, b) => a + b, 0), total, count, true);
+          const response = await request(url, { ...options, signal, headers: { ...Object.fromEntries(new Headers(options.headers)), Range: `bytes=${start}-${end}`, 'Accept-Encoding': 'identity', ...(validator ? { 'If-Range': validator } : {}) } });
+          if (response.status !== 206 || response.headers.get('content-range') !== `bytes ${start}-${end}/${total}` ||
+              (response.headers.get('content-encoding') && response.headers.get('content-encoding') !== 'identity')) {
+            await response.body?.cancel(); throw rangeError(target);
+          }
+          const meter = new Transform({ transform(chunk, encoding, callback) {
+            progress[index] += chunk.length;
+            if (progress[index] > end - start + 1) { callback(rangeError(target)); return; }
+            notify(progress.reduce((a, b) => a + b, 0), total, count); callback(null, chunk);
+          } });
+          await pipeline(Readable.fromWeb(response.body), meter, createWriteStream(temp, { flags: 'r+', start }), { signal });
+          if (progress[index] !== end - start + 1) throw Object.assign(new Error(`文件分段下载不完整：${path.basename(target)}`), { code: 'DOWNLOAD_TIMEOUT' });
+          break;
+        } catch (error) {
+          if (error.status === 416) throw rangeError(target);
+          if (signal.aborted || !retryable(error) || attempt + 1 >= options.attempts) throw error;
+          if (options.retryDelayMs) {
+            const { setTimeout: delay } = await import('node:timers/promises');
+            await delay(options.retryDelayMs * 2 ** attempt, undefined, { signal });
+          }
+        }
+      }
+    } catch (error) { if (!failure) { failure = error; controller.abort(error); } }
+  }));
+  if (failure) throw failure;
+}
+
+export async function download(urls, target, options = {}) {
+  const transfer = options.tracker?.start(target);
+  try { return await downloadFile(urls, target, { ...options, onProgress: (bytes, total, connections) => {
+    options.tracker?.progress(transfer, bytes, total, connections); options.onProgress?.(bytes, total, connections);
+  } }); }
+  finally { if (transfer !== undefined) options.tracker.end(transfer); }
+}
+
+async function downloadFile(urls, target, { hashes = {}, source = 'official', signal, onProgress, onAttempt, onFailure, headers, attempts = 3, retryDelayMs = 1000, headerTimeoutMs, idleTimeoutMs, fetcher, size = 0, connections = 4, parallelThreshold = 4 * 1024 ** 2, minSegmentSize = 1024 ** 2 } = {}) {
   signal?.throwIfAborted();
   const algorithm = hashes.sha512 ? 'sha512' : hashes.sha256 ? 'sha256' : hashes.sha1 ? 'sha1' : null;
   if (algorithm) { try { if (await hashFile(target, algorithm) === hashes[algorithm]) return target; } catch {} }
@@ -165,15 +215,48 @@ export async function download(urls, target, { hashes = {}, source = 'official',
     try {
       signal?.throwIfAborted();
       onAttempt?.({ url, attempt: attempt + 1, attempts });
-      const response = await request(url, { signal, headers, headerTimeoutMs, idleTimeoutMs, fetcher });
-      const total = Number(response.headers.get('content-length')) || 0;
-      let received = 0, lastNotify = 0;
+      const limit = Math.max(1, Math.min(8, Math.floor(connections) || 1));
+      const requestOptions = { signal, headers: { ...Object.fromEntries(new Headers(headers)), 'Accept-Encoding': 'identity' }, headerTimeoutMs, idleTimeoutMs, fetcher, attempts, retryDelayMs };
+      const probe = limit > 1 && size >= parallelThreshold;
+      let response;
+      try { response = await request(url, { ...requestOptions, headers: { ...requestOptions.headers, ...(probe ? { Range: 'bytes=0-0' } : {}) } }); }
+      catch (error) { if (signal?.aborted || !probe || error.status !== 416) throw error; response = await request(url, requestOptions); }
+      const range = /^bytes 0-0\/(\d+)$/.exec(response.headers.get('content-range') || '');
+      let total = response.status === 206 && range ? Number(range[1]) : Number(response.headers.get('content-length')) || 0;
+      const etag = response.headers.get('etag');
+      const validator = etag && !etag.startsWith('W/') ? etag : response.headers.get('last-modified');
+      const count = Math.min(limit, Math.floor(total / Math.max(1, minSegmentSize)));
+      let lastNotify = 0;
+      const notify = (received, length, active = 1, force = false) => {
+        if (force || Date.now() - lastNotify >= 150) { onProgress?.(received, length, active); lastNotify = Date.now(); }
+      };
+      const encoded = response.headers.get('content-encoding');
+      if (count > 1 && Number.isSafeInteger(total) && total >= parallelThreshold && (!encoded || encoded === 'identity') &&
+          (algorithm || validator) && ((probe && response.status === 206 && range) || response.headers.get('accept-ranges') === 'bytes')) {
+        await response.body?.cancel(); notify(0, total, count, true);
+        try {
+          await downloadRanges(url, temp, target, total, count, validator, requestOptions, notify);
+          if (algorithm && await hashFile(temp, algorithm) !== hashes[algorithm]) throw new Error(`文件校验失败：${path.basename(target)}`);
+          if (size > 0 && Number.isSafeInteger(size) && total !== size) throw new Error(`文件大小不符：${path.basename(target)}`);
+          signal?.throwIfAborted(); await fs.rename(temp, target); notify(total, total, count, true); return target;
+        } catch (error) {
+          if (signal?.aborted || error.code !== 'RANGE_UNSUPPORTED') throw error;
+          await fs.rm(temp, { force: true });
+          response = await request(url, requestOptions); total = Number(response.headers.get('content-length')) || 0;
+        }
+      } else if (response.status === 206) {
+        await response.body?.cancel(); response = await request(url, requestOptions); total = Number(response.headers.get('content-length')) || 0;
+      }
+      if (response.status !== 200 || !response.body) { await response.body?.cancel(); throw rangeError(target); }
+      let received = 0;
       const hash = algorithm ? createHash(algorithm) : null;
-      const meter = new Transform({ transform(chunk, encoding, callback) { received += chunk.length; hash?.update(chunk); if (Date.now() - lastNotify > 150) { onProgress?.(received, total); lastNotify = Date.now(); } callback(null, chunk); } });
+      notify(0, total, 1, true);
+      const meter = new Transform({ transform(chunk, encoding, callback) { received += chunk.length; hash?.update(chunk); notify(received, total); callback(null, chunk); } });
       await pipeline(Readable.fromWeb(response.body), meter, createWriteStream(temp), { signal });
       if (total && received !== total) throw Object.assign(new Error(`文件下载不完整：${path.basename(target)}`), { code: 'DOWNLOAD_TIMEOUT' });
       if (algorithm && hash.digest('hex') !== hashes[algorithm]) throw new Error(`文件校验失败：${path.basename(target)}`);
-      await fs.rename(temp, target); onProgress?.(received, total); return target;
+      if (size > 0 && Number.isSafeInteger(size) && received !== size) throw new Error(`文件大小不符：${path.basename(target)}`);
+      signal?.throwIfAborted(); await fs.rename(temp, target); notify(received, total, 1, true); return target;
     } catch (error) {
       last = error; await fs.rm(temp, { force: true });
       if (signal?.aborted) throw error;

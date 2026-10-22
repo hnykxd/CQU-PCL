@@ -11,10 +11,31 @@ using System.Windows.Media.Imaging;
 namespace CquPcl.Native {
     sealed partial class LauncherWindow {
         bool smokeTest;
+        bool pauseSmokeState;
         public void EnableSmokeTest() { smokeTest = true; }
         async Task SmokeTest() {
             string output = Path.Combine(dataRoot, "native-qa"); Directory.CreateDirectory(output);
             try {
+                if (Environment.GetEnvironmentVariable("CQU_PCL_NATIVE_QA") == "1") {
+                    if (Selected.mods == null || !Selected.mods.Any(m => m.name == "本地测试模组" && m.versionNumber == "1.2.3")) throw new Exception("Local mod inventory was not loaded.");
+                    Navigate("instances");
+                    var openFolder = Descendants(Find<StackPanel>("InstancesList")).OfType<Button>().First(b => (string)b.Content == "打开目录");
+                    openFolder.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+                    if (File.ReadAllText(Path.Combine(output, "opened-directory.txt")) != Selected.directory) throw new Exception("Open directory button did not use the world directory.");
+                    var fixtureJob = new Job { id = "ui-download-fixture", title = "安装 Minecraft · 进度测试", instanceId = Selected.id, status = "running", stage = "下载游戏文件 · 3/18", progress = 35,
+                        currentFile = "minecraft-client.jar", downloadedBytes = 125 * 1024 * 1024, speedBytesPerSecond = 8.5 * 1024 * 1024, connections = 5,
+                        activeFiles = new System.Collections.Generic.List<DownloadFile> { new DownloadFile { fileName = "minecraft-client.jar", receivedBytes = 32 * 1024 * 1024, totalBytes = 64 * 1024 * 1024, connections = 4 }, new DownloadFile { fileName = "fabric-api.jar", connections = 1 } } };
+                    pauseSmokeState = true; state.jobs.Add(fixtureJob); Navigate("tasks"); UpdateLayout(); Find<Border>("Toast").Visibility = Visibility.Collapsed;
+                    var taskControls = Descendants(Find<StackPanel>("TasksList")).OfType<TextBlock>().ToList();
+                    if (!taskControls.Any(t => t.Text.Contains("minecraft-client.jar")) || !taskControls.Any(t => t.Text.Contains("8.50 MB/s"))) throw new Exception("File name or live speed was not rendered.");
+                    var removeButton = Descendants(Find<StackPanel>("TasksList")).OfType<Button>().First(b => (string)b.Content == "删除任务");
+                    fixtureJob.speedBytesPerSecond = 9 * 1024 * 1024; RenderTasks();
+                    if (!Object.ReferenceEquals(removeButton, Descendants(Find<StackPanel>("TasksList")).OfType<Button>().First(b => (string)b.Content == "删除任务"))) throw new Exception("Progress refresh replaced active task controls.");
+                    Capture(Path.Combine(output, "tasks-active.png"));
+                    Width = MinWidth; Height = MinHeight; await Task.Delay(180); UpdateLayout(); Capture(Path.Combine(output, "tasks-minimum.png"));
+                    Width = 1120; Height = 770; await Task.Delay(180); state.jobs.Remove(fixtureJob); RenderTasks(); pauseSmokeState = false;
+                    await Refresh();
+                }
                 foreach (string target in new[] { "home", "instances", "downloads", "tasks", "settings", "account" }) {
                     Navigate(target); await Task.Delay(220); UpdateLayout(); Find<Border>("Toast").Visibility = Visibility.Collapsed; Capture(Path.Combine(output, target + ".png"));
                 }
@@ -63,7 +84,7 @@ namespace CquPcl.Native {
                 var fixture = new Pack();
                 string packFile = Path.Combine(dataRoot, "fixture.mrpack");
                 if (File.Exists(packFile)) { fixture = await client.InspectPack(packFile); if (fixture.minecraft != "1.21.1" || fixture.loader != "fabric") throw new Exception("Pack inspection failed."); }
-                File.WriteAllText(Path.Combine(output, "result.json"), new JavaScriptSerializer().Serialize(new { ok = true, playerName = state.settings.playerName, memory = state.settings.memory, instances = state.instances.Count, pack = fixture.name, ui = "WPF", pages = 8, dialogs = 4, microsoftFixture = true, windowControls = true }));
+                File.WriteAllText(Path.Combine(output, "result.json"), new JavaScriptSerializer().Serialize(new { ok = true, playerName = state.settings.playerName, memory = state.settings.memory, instances = state.instances.Count, pack = fixture.name, ui = "WPF", pages = 8, dialogs = 4, microsoftFixture = true, windowControls = true, localMods = true, openDirectory = true, downloadTelemetry = true, stableTaskControls = true }));
             } catch (Exception e) { File.WriteAllText(Path.Combine(output, "result.json"), new JavaScriptSerializer().Serialize(new { ok = false, error = e.ToString() })); }
             Close();
         }

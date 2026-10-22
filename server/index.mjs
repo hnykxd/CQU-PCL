@@ -11,11 +11,24 @@ import { gameVersions, searchProjects, projectVersions, installMod, checkModUpda
 import { installGame, launchInstance, loaderVersions } from './installer.mjs';
 import { createAuthService, resolveLaunchAccount } from './auth.mjs';
 import { downloadTexture, skinPng } from './cosmetics.mjs';
+import { ModScanner } from './mods.mjs';
 
 const projectRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 export async function createServer({ root = process.env.CQU_PCL_DATA || path.join(projectRoot, '.cqu-pcl'), apiToken, openPath, onAccountBound, protectSecret = value => value, revealSecret = value => value, auth = createAuthService(), textureDownloader = downloadTexture } = {}) {
   const store = await createStore(root);
   const jobs = new JobQueue(); const app = express(); const clients = new Set(); const running = new Map(); const prepared = new Map();
+  const scanner = new ModScanner(); let scanning;
+  const scanMods = () => {
+    if (scanning) return scanning;
+    scanning = (async () => {
+      let changed = false;
+      for (const instance of store.data.instances) if (instance.edition === 'java' && instance.status !== 'installing' && !jobs.busy(instance.id)) {
+        changed = await scanner.scan(instance, path.join(store.directory(instance.id), 'game')) || changed;
+      }
+      if (changed) { await store.save(); broadcast(); }
+    })().finally(() => { scanning = null; });
+    return scanning;
+  };
   let authRevision = 0, authFlowId = null;
   let accountRevision = 0;
   app.disable('x-powered-by');
@@ -58,7 +71,7 @@ export async function createServer({ root = process.env.CQU_PCL_DATA || path.joi
     instance.packPath = 'pack.zip';
     await fs.writeFile(path.join(store.directory(instance.id), instance.packPath), buffer); await store.save(); return instance;
   }
-  app.get('/api/state', (req, res) => res.json(snapshot()));
+  app.get('/api/state', async (req, res) => { await scanMods(); res.json(snapshot()); });
   app.get('/api/events', (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream'); res.setHeader('Cache-Control', 'no-cache'); res.setHeader('Connection', 'keep-alive'); res.flushHeaders();
     clients.add(res); res.write(`data: ${JSON.stringify(snapshot())}\n\n`);
@@ -105,7 +118,8 @@ export async function createServer({ root = process.env.CQU_PCL_DATA || path.joi
     await store.save(); broadcast(); res.json({ ok: true });
   });
   app.post('/api/instances/:id/retry', async (req, res) => { guard(req.params.id); const instance = store.instance(req.params.id); if (instance.edition !== 'java') throw new Error('请在下载中心重新下载服务端'); const job = await queueInstall(instance); res.status(202).json({ job }); });
-  app.post('/api/instances/:id/open', async (req, res) => { const target = store.directory(req.params.id); if (!openPath) throw new Error('浏览器模式无法打开系统文件夹，请复制世界设置中的目录路径'); await openPath(target); res.json({ ok: true }); });
+  app.post('/api/instances/:id/open', async (req, res) => { const target = store.directory(req.params.id); await fs.access(target); if (!openPath) throw new Error('系统目录打开服务不可用，请复制目录路径'); await openPath(target); res.json({ ok: true }); });
+  app.post('/api/instances/:id/mods/scan', async (req, res) => { guard(req.params.id); const instance = store.instance(req.params.id); await scanner.scan(instance, path.join(store.directory(instance.id), 'game')); await store.save(); broadcast(); res.json({ mods: instance.mods }); });
   app.get('/api/instances/:id/logs', async (req, res) => { let text = ''; try { text = (await fs.readFile(path.join(store.directory(req.params.id), 'launcher.log'), 'utf8')).slice(-200000); } catch {} res.json({ text }); });
   app.post('/api/instances/:id/launch', async (req, res) => {
     guard(req.params.id); const instance = store.instance(req.params.id);
@@ -142,7 +156,7 @@ export async function createServer({ root = process.env.CQU_PCL_DATA || path.joi
     const job = jobs.add(`下载整合包 ${String(req.body.name || version.name).slice(0, 80)}`, null, async context => {
       const temp = path.join(store.root, 'imports', `${context.job.id}.mrpack`); let instance;
       try {
-        await download(file.url, temp, { hashes: file.hashes, signal: context.signal, onProgress: (bytes, total) => context.update('下载整合包清单', total ? bytes / total * 5 : 2) });
+        await download(file.url, temp, { hashes: file.hashes, signal: context.signal, size: file.size, tracker: context.tracker, connections: Math.min(4, settings().concurrency || 6), onProgress: (bytes, total) => context.update('下载整合包清单', total ? bytes / total * 5 : 2) });
         const buffer = await fs.readFile(temp); const pack = inspectPack(buffer);
         instance = await addPack(pack, buffer, String(req.body.name || pack.name).slice(0, 80), { projectId: version.project_id, versionId: version.id }); context.job.instanceId = instance.id;
         await installGame(instance, store.directory(instance.id), settings(), context);
@@ -154,19 +168,25 @@ export async function createServer({ root = process.env.CQU_PCL_DATA || path.joi
   });
   app.post('/api/instances/:id/mods/install', async (req, res) => {
     guard(req.params.id); const instance = store.instance(req.params.id); if (instance.status !== 'ready') throw new Error('请先完整安装此世界');
-    const job = jobs.add('安装 / 更新模组', instance.id, async context => { try { await installMod(req.body.versionId, instance, path.join(store.directory(instance.id), 'game'), context); } finally { await store.save(); } }); res.status(202).json({ job });
+    const job = jobs.add('安装 / 更新模组', instance.id, async context => { try { await scanner.scan(instance, path.join(store.directory(instance.id), 'game')); await installMod(req.body.versionId, instance, path.join(store.directory(instance.id), 'game'), context, new Set(), settings()); } finally { await store.save(); } }); res.status(202).json({ job });
   });
   app.get('/api/instances/:id/updates', async (req, res) => {
-    guard(req.params.id); const instance = store.instance(req.params.id); const mods = await checkModUpdates(instance, path.join(store.directory(instance.id), 'game'));
+    guard(req.params.id); const instance = store.instance(req.params.id); await scanner.scan(instance, path.join(store.directory(instance.id), 'game')); const mods = await checkModUpdates(instance, path.join(store.directory(instance.id), 'game'));
     let pack = null;
     if (instance.pack?.projectId) { const versions = await projectVersions(instance.pack.projectId); const latest = versions.find(v => v.version_type === 'release') || versions[0]; const current = versions.find(v => v.id === instance.pack.versionId); if (latest?.id !== instance.pack.versionId && (!current || Date.parse(latest.date_published) > Date.parse(current.date_published))) pack = latest; }
     await store.save(); res.json({ mods, pack });
   });
   app.post('/api/jobs/:id/cancel', async (req, res) => { const job = jobs.jobs.find(j => j.id === req.params.id); const queued = job?.status === 'queued'; jobs.cancel(req.params.id); if (queued && job.instanceId) { const instance = store.instance(job.instanceId); if (instance.status === 'installing') { instance.status = 'error'; instance.error = '安装已取消，可重试'; await store.save(); } } broadcast(); res.json({ ok: true }); });
+  app.delete('/api/jobs/:id', async (req, res) => {
+    const job = jobs.jobs.find(j => j.id === req.params.id); const queued = job?.status === 'queued';
+    await jobs.remove(req.params.id);
+    if (queued && job.instanceId) { const instance = store.instance(job.instanceId); if (instance.status === 'installing') { instance.status = 'error'; instance.error = '安装已取消，可重试'; await store.save(); } }
+    broadcast(); res.json({ ok: true });
+  });
   app.post('/api/bedrock/install', async (req, res) => {
     const versions = await bedrockVersions(); const entry = versions.find(v => v.url === req.body.url); if (!entry) throw new Error('该地址不在基岩版官方下载列表中');
     const instance = await store.add({ name: `Bedrock Server ${entry.version} (${entry.platform})`, minecraft: entry.version, loader: 'vanilla', edition: 'bedrock-server' });
-    const job = jobs.add(`下载 ${instance.name}`, instance.id, async context => { try { await download(entry.url, path.join(store.directory(instance.id), `bedrock-server-${entry.version}.zip`), { signal: context.signal, onProgress: (bytes, total) => context.update('下载官方服务端 ZIP', total ? bytes / total * 99 : 10) }); instance.status = 'ready'; await store.save(); } catch (error) { instance.status = 'error'; instance.error = error.message; await store.save(); throw error; } }); res.status(202).json({ instance, job });
+    const job = jobs.add(`下载 ${instance.name}`, instance.id, async context => { try { await download(entry.url, path.join(store.directory(instance.id), `bedrock-server-${entry.version}.zip`), { signal: context.signal, tracker: context.tracker, connections: Math.min(4, settings().concurrency || 6), onProgress: (bytes, total) => context.update('下载官方服务端 ZIP', total ? bytes / total * 99 : 10) }); context.signal.throwIfAborted(); instance.status = 'ready'; await store.save(); } catch (error) { instance.status = 'error'; instance.error = error.message; await store.save(); throw error; } }); res.status(202).json({ instance, job });
   });
   app.post('/api/auth/start', async (req, res) => {
     const revision = ++authRevision; authFlowId = null;
@@ -241,7 +261,8 @@ export async function createServer({ root = process.env.CQU_PCL_DATA || path.joi
   app.use((error, req, res, next) => { console.error(error.message); res.status(error.type === 'entity.too.large' ? 413 : 400).json({ error: error.type === 'entity.too.large' ? '整合包大小超过 512 MB 限制' : error.message || '操作失败' }); });
   // The WPF client is the only front end, so the server exposes the API only.
   app.use((req, res) => res.status(404).json({ error: '原生版仅提供启动器服务接口' }));
-  await store.save();
-  return { app, store, jobs, close: () => { clearTimeout(scheduled); auth.close(); for (const client of clients) client.end(); } };
+  await scanMods(); await store.save();
+  const modTimer = setInterval(() => { if (clients.size) scanMods().catch(error => console.error('本地模组扫描失败：' + error.message)); }, 3000); modTimer.unref?.();
+  return { app, store, jobs, close: () => { clearInterval(modTimer); clearTimeout(scheduled); auth.close(); for (const client of clients) client.end(); } };
 }
 

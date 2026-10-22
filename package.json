@@ -19,6 +19,7 @@
     "@xmcl/installer": "6.3.6",
     "adm-zip": "^0.5.16",
     "express": "^5.1.0",
+    "smol-toml": "1.9.1",
     "undici": "^7.16.0"
   },
   "devDependencies": {

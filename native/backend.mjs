@@ -23,7 +23,10 @@ if (process.env.CQU_PCL_WAIT_FOR_HOST === '1') {
 const service = await createServer({ apiToken: process.env.CQU_PCL_API_TOKEN, root: process.env.CQU_PCL_DATA,
   protectSecret: value => value ? 'dpapi:' + crypto('encrypt', value) : '',
   revealSecret: value => value?.startsWith('dpapi:') ? crypto('decrypt', value.slice(6)) : value?.startsWith('encrypted:') ? '' : value || '',
-  openPath: async target => { spawn('explorer.exe', [path.resolve(target)], { windowsHide: true, detached: true, stdio: 'ignore' }).unref(); },
+  openPath: target => new Promise((resolve, reject) => {
+    const child = spawn(path.join(process.env.WINDIR || 'C:/Windows', 'explorer.exe'), [path.resolve(target)], { windowsHide: true, detached: true, stdio: 'ignore' });
+    child.once('error', reject); child.once('spawn', () => { child.unref(); resolve(); });
+  }),
   onAccountBound: () => console.log('CQU_FOCUS')
 });
 const server = service.app.listen(0, '127.0.0.1', () => console.log('CQU_READY http://127.0.0.1:' + server.address().port));

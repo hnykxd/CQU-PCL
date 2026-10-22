@@ -32,6 +32,15 @@ namespace CquPcl.Native {
         readonly string[] pages = { "HomePage", "InstancesPage", "DownloadsPage", "CatalogPage", "TasksPage", "AccountPage", "SettingsPage" };
         readonly string[] navigation = { "NavHome", "NavInstances", "NavDownloads", "NavPacks", "NavMods", "NavTasks", "NavAccount", "NavSettings" };
         readonly Dictionary<Window, TextBlock> dialogErrors = new Dictionary<Window, TextBlock>();
+        readonly Dictionary<string, TaskView> taskViews = new Dictionary<string, TaskView>();
+        TextBlock taskSummary;
+        sealed class TaskView {
+            public Border card;
+            public TextBlock title, status, file, metrics, percent;
+            public ProgressBar progress;
+            public WrapPanel actions;
+            public string actionStatus;
+        }
         public LauncherWindow(string workspace, string dataRoot, string host, bool dev, SingleInstance ownership) {
             this.workspace = workspace; this.dataRoot = dataRoot; this.host = host; this.dev = dev;
             Title = "CQU PCL"; Width = 1120; Height = 770; MinWidth = 920; MinHeight = 660;
@@ -61,7 +70,7 @@ namespace CquPcl.Native {
             Find<Button>("LaunchButton").Click += async (sender, e) => {
                 var instance = Selected;
                 if (instance == null) { await ShowInstall(); return; }
-                if (instance.edition != "java") { await Run((Button)sender, async () => { await client.Request<object>("/instances/" + instance.id + "/open", new {}); }, "服务端 ZIP 已下载，请按官方说明启动。"); return; }
+                if (instance.edition != "java") { await Run((Button)sender, () => OpenDirectory(instance.directory), "服务端 ZIP 已下载，请按官方说明启动。"); return; }
                 if (launching) return;
                 launching = true;
                 try { await Run((Button)sender, async () => { await client.Request<object>("/instances/" + instance.id + "/launch", new {}); }, "游戏正在启动"); }
@@ -118,6 +127,7 @@ namespace CquPcl.Native {
             target.Activate(); SetForegroundWindow(new System.Windows.Interop.WindowInteropHelper(target).Handle);
         }
         Instance Selected { get { return state == null ? null : state.instances.FirstOrDefault(i => i.id == state.selectedId); } }
+        int ModCount(Instance instance) { return instance.mods == null ? 0 : instance.mods.Count(m => m.enabled != false && m.recognized != false); }
         Brush Brush(string hex) { return (Brush)new BrushConverter().ConvertFromString(hex); }
         TextBlock Text(string value, double size = 13, string color = "#22354D") { return new TextBlock { Text = value ?? "", FontSize = size, Foreground = Brush(color), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 9) }; }
         Button Button(string label, Func<Task> action, bool primary = false) {
@@ -162,6 +172,7 @@ namespace CquPcl.Native {
         }
         async Task Refresh() { ApplyState(await client.Request<LauncherState>("/state")); }
         void ApplyState(LauncherState value) {
+            if (smokeTest && pauseSmokeState) return;
             state = value;
             string nextSignature = (state.account == null ? "" : state.account.name + state.account.uuid + state.account.expiresAt) + state.settings.loginMode;
             bool accountChanged = nextSignature != accountSignature; accountSignature = nextSignature;
@@ -171,7 +182,7 @@ namespace CquPcl.Native {
             var selected = Selected;
             Find<TextBlock>("WorldName").Text = selected == null ? "创造你的第一个世界" : selected.name;
             Find<TextBlock>("WorldSummary").Text = selected == null ? "从原版开始，也可以导入你喜欢的整合包。" : selected.Summary;
-            Find<TextBlock>("WorldStatus").Text = selected == null ? "存档、模组与配置，独立存放。" : (selected.running ? "游戏运行中" : Labels.Status(selected.status)) + "  ·  " + (selected.mods == null ? 0 : selected.mods.Count) + " 个模组" + (String.IsNullOrEmpty(selected.error) ? "" : "  ·  " + selected.error);
+            Find<TextBlock>("WorldStatus").Text = selected == null ? "存档、模组与配置，独立存放。" : (selected.running ? "游戏运行中" : Labels.Status(selected.status)) + "  ·  " + ModCount(selected) + " 个模组" + (String.IsNullOrEmpty(selected.error) ? "" : "  ·  " + selected.error);
             Find<Button>("LaunchButton").Content = selected == null ? "▶   开启新世界" : selected.edition == "bedrock-server" ? "打开服务端目录" : "▶   启动游戏";
             Find<Button>("LaunchButton").IsEnabled = !launching && (selected == null || (selected.status == "ready" && !selected.running));
             Find<Button>("WorldSettingsButton").IsEnabled = selected != null;
@@ -181,6 +192,7 @@ namespace CquPcl.Native {
             Find<TextBlock>("LastPlayed").Text = selected != null && DateTime.TryParse(selected.lastPlayed, out last) ? "上次游玩 " + last.ToLocalTime().ToString("yyyy/MM/dd HH:mm") : "等待第一次冒险";
             if (page == "instances") RenderInstances();
             if (page == "tasks") RenderTasks();
+            if (page == "downloads") UpdateDownloadSummary();
             if (page == "account" && accountChanged) RenderAccount();
         }
         void Navigate(string next) {
@@ -221,31 +233,64 @@ namespace CquPcl.Native {
             foreach (var item in state.instances) {
                 var instance = item;
                 var content = new StackPanel(); content.Children.Add(Text(instance.name, 19)); content.Children.Add(Text(instance.Summary, 12, "#7D91AB"));
-                content.Children.Add(Text((instance.running ? "游戏运行中" : Labels.Status(instance.status)) + " · " + (instance.mods == null ? 0 : instance.mods.Count) + " 个模组 · 独立目录", 11, "#748DAA"));
+                content.Children.Add(Text((instance.running ? "游戏运行中" : Labels.Status(instance.status)) + " · " + ModCount(instance) + " 个模组 · 独立目录", 11, "#748DAA"));
                 if (!String.IsNullOrEmpty(instance.error)) content.Children.Add(Text(instance.error, 12, "#C94F57"));
                 var select = Button(instance.id == state.selectedId ? "✓ 当前世界" : "选择世界", async () => { await client.Request<object>("/selected", new { id = instance.id }); await Refresh(); Navigate("home"); }, true);
-                content.Children.Add(Actions(select, Button("世界设置", () => { ShowInstance(instance); return Task.FromResult(0); }), Button("打开目录", async () => { await client.Request<object>("/instances/" + instance.id + "/open", new {}); })));
+                content.Children.Add(Actions(select, Button("世界设置", () => { ShowInstance(instance); return Task.FromResult(0); }), Button("打开目录", () => OpenDirectory(instance.directory))));
                 panel.Children.Add(Card(content));
             }
         }
         void RenderTasks() {
-            var panel = Find<StackPanel>("TasksList"); panel.Children.Clear();
-            if (state.jobs.Count == 0) { panel.Children.Add(Card(Text("目前没有下载任务。创建世界或安装整合包后，进度会显示在这里。", 15))); return; }
+            var panel = Find<StackPanel>("TasksList");
+            if (state.jobs.Count == 0) { taskViews.Clear(); taskSummary = null; panel.Children.Clear(); panel.Children.Add(Card(Text("目前没有下载任务。创建世界或安装整合包后，进度会显示在这里。", 15))); return; }
+            if (taskSummary == null || taskSummary.Parent == null) { panel.Children.Clear(); taskSummary = Text("", 13, "#68809E"); panel.Children.Add(taskSummary); }
+            taskSummary.Text = state.jobs.Count(j => j.status == "running" || j.status == "queued") + " 个活动任务  ·  " + FormatBytes(state.jobs.Sum(j => j.speedBytesPerSecond)) + "/s  ·  " + state.jobs.Count + " 条记录";
+            foreach (string id in taskViews.Keys.Where(id => !state.jobs.Any(job => job.id == id)).ToList()) { panel.Children.Remove(taskViews[id].card); taskViews.Remove(id); }
+            int index = 1;
             foreach (var item in state.jobs) {
-                var job = item; var content = new StackPanel(); content.Children.Add(Text(job.title, 17));
-                content.Children.Add(Text(Labels.Status(job.status) + " · " + job.stage, 12, job.status == "error" ? "#C94F57" : "#7D91AB"));
-                content.Children.Add(new ProgressBar { Value = job.progress, Maximum = 100, Margin = new Thickness(0, 8, 0, 5) });
-                content.Children.Add(Text(Math.Round(job.progress) + "%", 10, "#8FA0B6"));
-                if (job.status == "queued" || job.status == "running") content.Children.Add(Actions(Button("取消任务", async () => { await client.Request<object>("/jobs/" + job.id + "/cancel", new {}); await Refresh(); Notify("正在取消任务"); })));
-                if (job.status == "error" || job.status == "cancelled") {
-                    var instance = state.instances.FirstOrDefault(i => i.id == job.instanceId && i.edition == "java");
-                    if (instance != null) content.Children.Add(Actions(Button("重新安装", async () => { await client.Request<object>("/instances/" + instance.id + "/retry", new {}); await Refresh(); })));
+                var job = item; TaskView view;
+                if (!taskViews.TryGetValue(job.id, out view)) {
+                    view = new TaskView { title = Text("", 17), status = Text("", 12, "#7D91AB"), file = Text("", 12), metrics = Text("", 12, "#68809E"), percent = Text("", 10, "#8FA0B6"), progress = new ProgressBar { Maximum = 100, Margin = new Thickness(0, 8, 0, 5) }, actions = Actions() };
+                    view.file.TextWrapping = TextWrapping.NoWrap; view.file.TextTrimming = TextTrimming.CharacterEllipsis;
+                    var content = new StackPanel(); foreach (var element in new UIElement[] { view.title, view.status, view.file, view.metrics, view.progress, view.percent, view.actions }) content.Children.Add(element);
+                    view.card = Card(content); taskViews.Add(job.id, view);
                 }
-                panel.Children.Add(Card(content));
+                if (panel.Children.IndexOf(view.card) != index) { panel.Children.Remove(view.card); panel.Children.Insert(index, view.card); } index++;
+                view.title.Text = job.title; view.status.Text = Labels.Status(job.status) + " · " + job.stage; view.status.Foreground = Brush(job.status == "error" ? "#C94F57" : "#7D91AB");
+                var files = job.activeFiles ?? new List<DownloadFile>();
+                view.file.Text = files.Count > 0 ? "正在下载：" + files[0].fileName + (files.Count > 1 ? "  （另有 " + (files.Count - 1) + " 个文件）" : "") : String.IsNullOrEmpty(job.currentFile) ? (job.status == "queued" ? "等待任务开始" : "当前没有文件传输") : "最近文件：" + job.currentFile;
+                view.file.ToolTip = files.Count > 0 ? String.Join(Environment.NewLine, files.Select(f => f.fileName + "  ·  " + FormatBytes(f.receivedBytes) + (f.totalBytes > 0 ? " / " + FormatBytes(f.totalBytes) : ""))) : job.currentFile;
+                view.metrics.Text = FormatBytes(job.speedBytesPerSecond) + "/s  ·  累计接收 " + FormatBytes(job.downloadedBytes) + (job.connections > 0 ? "  ·  " + job.connections + " 个连接" : "");
+                view.progress.Value = job.progress; view.percent.Text = Math.Round(job.progress) + "%";
+                string actionStatus = job.status + job.instanceId;
+                if (view.actionStatus != actionStatus) {
+                    view.actionStatus = actionStatus; view.actions.Children.Clear();
+                    if (job.status == "queued" || job.status == "running") view.actions.Children.Add(Button("取消任务", async () => { await client.Request<object>("/jobs/" + job.id + "/cancel", new {}); await Refresh(); Notify("正在取消任务"); }));
+                    if (job.status == "error" || job.status == "cancelled") {
+                        var instance = state.instances.FirstOrDefault(i => i.id == job.instanceId && i.edition == "java");
+                        if (instance != null) view.actions.Children.Add(Button("重新安装", async () => { await client.Request<object>("/instances/" + instance.id + "/retry", new {}); await Refresh(); }));
+                    }
+                    var remove = Button("删除任务", async () => { await client.Request<object>("/jobs/" + job.id, null, "DELETE"); await Refresh(); Notify("任务已删除。"); });
+                    remove.ToolTip = "停止此任务并移除记录，保留世界与已下载文件"; view.actions.Children.Add(remove);
+                }
             }
+        }
+        string FormatBytes(double bytes) {
+            if (bytes >= 1024 * 1024 * 1024) return (bytes / (1024 * 1024 * 1024)).ToString("0.00") + " GB";
+            if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).ToString("0.00") + " MB";
+            if (bytes >= 1024) return (bytes / 1024).ToString("0.0") + " KB";
+            return Math.Max(0, bytes).ToString("0") + " B";
+        }
+        void UpdateDownloadSummary() {
+            var summary = Find<StackPanel>("DownloadsContent").Children.OfType<Border>().FirstOrDefault(b => (string)b.Tag == "DownloadSummary");
+            if (summary == null) return;
+            var content = (StackPanel)summary.Child;
+            ((TextBlock)content.Children[1]).Text = state.jobs.Count(j => j.status == "running" || j.status == "queued") + " 个活动任务  ·  " + FormatBytes(state.jobs.Sum(j => j.speedBytesPerSecond)) + "/s";
         }
         void RenderDownloads() {
             var panel = Find<StackPanel>("DownloadsContent"); panel.Children.Clear();
+            var queue = new StackPanel(); queue.Children.Add(Text("下载进度", 19)); queue.Children.Add(Text("", 12, "#68809E")); queue.Children.Add(Actions(Button("查看下载任务", () => { Navigate("tasks"); return Task.FromResult(0); })));
+            var summary = Card(queue); summary.Tag = "DownloadSummary"; panel.Children.Add(summary); UpdateDownloadSummary();
             var java = new StackPanel(); java.Children.Add(Text("Minecraft Java Edition", 21));
             java.Children.Add(Text("原版、Fabric、Forge、Quilt 与 NeoForge。自动安装游戏、资源与所需 Java。", 13, "#7D91AB"));
             java.Children.Add(Actions(Button("＋ 选择版本并安装", async () => await ShowInstall(), true))); panel.Children.Add(Card(java));
@@ -404,7 +449,7 @@ namespace CquPcl.Native {
             var name = Field(content, "世界名称", instance.name); name.MaxLength = 80;
             var directory = Field(content, "独立目录", instance.directory); directory.IsReadOnly = true;
             var window = Dialog("世界设置 · " + instance.name, content, 620);
-            content.Children.Add(Actions(Button("保存名称", async () => { await client.Request<object>("/instances/" + instance.id, new { name = name.Text.Trim() }, "PATCH"); await Refresh(); Notify("名称已保存。"); }, true), Button("打开目录", async () => { await client.Request<object>("/instances/" + instance.id + "/open", new {}); }), Button("复制目录", () => { Clipboard.SetText(instance.directory); Notify("目录已复制。"); return Task.FromResult(0); })));
+            content.Children.Add(Actions(Button("保存名称", async () => { await client.Request<object>("/instances/" + instance.id, new { name = name.Text.Trim() }, "PATCH"); await Refresh(); Notify("名称已保存。"); }, true), Button("打开目录", () => OpenDirectory(instance.directory)), Button("复制目录", () => { Clipboard.SetText(instance.directory); Notify("目录已复制。"); return Task.FromResult(0); })));
             var updatesPanel = new StackPanel();
             var check = Button("检查模组与整合包更新", async () => {
                 var updates = await client.Request<Updates>("/instances/" + instance.id + "/updates"); updatesPanel.Children.Clear();
@@ -422,10 +467,17 @@ namespace CquPcl.Native {
             }), check));
             if (instance.status == "error" && instance.edition == "java") content.Children.Add(Actions(Button("重新安装", async () => { await client.Request<object>("/instances/" + instance.id + "/retry", new {}); await Refresh(); window.Close(); Navigate("tasks"); })));
             content.Children.Add(updatesPanel);
-            if (instance.mods != null && instance.mods.Count > 0) {
-                content.Children.Add(Text("已安装模组", 15));
-                var mods = new TextBox { Text = String.Join(Environment.NewLine, instance.mods.Select(m => m.name ?? m.fileName)), IsReadOnly = true, MaxHeight = 140, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, TextWrapping = TextWrapping.Wrap }; content.Children.Add(mods);
-            }
+            content.Children.Add(Text("本地模组", 15));
+            var localMods = new TextBox { IsReadOnly = true, MaxHeight = 170, MinHeight = 60, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, TextWrapping = TextWrapping.Wrap };
+            Action<Instance> renderMods = current => {
+                localMods.Text = current.mods == null || current.mods.Count == 0 ? "mods 文件夹中尚无模组。" : String.Join(Environment.NewLine, current.mods.Select(m =>
+                    (m.name ?? m.fileName) + (String.IsNullOrEmpty(m.versionNumber) ? "" : " · " + m.versionNumber) + (m.enabled == false ? " · 已禁用" : "") +
+                    "  [" + m.fileName + "]" + (String.IsNullOrEmpty(m.warning) ? "" : " · " + m.warning)));
+            };
+            renderMods(instance); content.Children.Add(localMods);
+            var rescan = Button("刷新本地模组", async () => { await client.Request<object>("/instances/" + instance.id + "/mods/scan", new {}); await Refresh(); renderMods(state.instances.First(i => i.id == instance.id)); Notify("本地模组已刷新。"); });
+            rescan.IsEnabled = !instance.running && !state.jobs.Any(j => j.instanceId == instance.id && (j.status == "queued" || j.status == "running"));
+            content.Children.Add(Actions(rescan, Button("打开 mods 文件夹", () => OpenDirectory(Path.Combine(instance.directory, "game", "mods")))));
             var delete = Button("删除世界", async () => {
                 if (MessageBox.Show(window, "将永久删除「" + instance.name + "」的游戏、模组和存档。请先备份。", "确认删除世界", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes) return;
                 await client.Request<object>("/instances/" + instance.id, null, "DELETE"); await Refresh(); window.Close(); Notify("世界已删除。");
@@ -438,7 +490,8 @@ namespace CquPcl.Native {
             var memory = Field(content, "游戏内存（MB，512–32768）", state.settings.memory.ToString(), "Memory");
             var java = Field(content, "Java 可执行文件路径（留空自动安装）", state.settings.javaPath, "JavaPath");
             content.Children.Add(Actions(Button("浏览 Java", () => { var open = new OpenFileDialog { Title = "选择 Java", Filter = "Java 可执行文件|java.exe;javaw.exe|所有文件|*.*" }; if (open.ShowDialog(this) == true) java.Text = open.FileName; return Task.FromResult(0); })));
-            var concurrency = Choice(content, "下载并发", new object[] { 2, 4, 6, 8, 12 }, state.settings.concurrency);
+            var concurrency = Choice(content, "并行下载文件数", new object[] { 2, 4, 6, 8, 12 }, state.settings.concurrency);
+            content.Children.Add(Text("大文件会自动使用最多 4 个分段连接；下载源不支持分段时自动改用普通下载。", 12, "#7D91AB"));
             content.Children.Add(Text("CurseForge API Key", 12, "#68809E"));
             var key = new PasswordBox { Password = state.settings.curseforgeKey ?? "", Padding = new Thickness(10, 8, 10, 8), Margin = new Thickness(0, 0, 0, 17) }; content.Children.Add(key);
             var save = Button("保存设置", async () => {
@@ -447,7 +500,7 @@ namespace CquPcl.Native {
                 await Refresh(); Notify("设置已保存。");
             }, true); System.Windows.Automation.AutomationProperties.SetAutomationId(save, "SaveSettings"); content.Children.Add(Actions(save)); panel.Children.Add(Card(content));
             var storage = new StackPanel(); storage.Children.Add(Text("启动器数据", 19)); var path = Field(storage, "配置与世界目录", state.root); path.IsReadOnly = true;
-            storage.Children.Add(Actions(Button("打开数据目录", () => { Process.Start(new ProcessStartInfo("explorer.exe", "\"" + state.root + "\"") { UseShellExecute = true }); return Task.FromResult(0); }), Button("复制路径", () => { Clipboard.SetText(state.root); Notify("数据目录已复制。"); return Task.FromResult(0); })));
+            storage.Children.Add(Actions(Button("打开数据目录", () => OpenDirectory(state.root)), Button("复制路径", () => { Clipboard.SetText(state.root); Notify("数据目录已复制。"); return Task.FromResult(0); })));
             panel.Children.Add(Card(storage));
         }
         void RenderAccount() {
@@ -545,6 +598,16 @@ namespace CquPcl.Native {
             using (var stream = new MemoryStream(bytes)) {
                 var bitmap = new BitmapImage(); bitmap.BeginInit(); bitmap.StreamSource = stream; bitmap.CacheOption = BitmapCacheOption.OnLoad; bitmap.EndInit(); bitmap.Freeze(); preview.Source = bitmap;
             }
+        }
+        Task OpenDirectory(string value) {
+            if (String.IsNullOrWhiteSpace(value)) throw new Exception("目录路径为空。");
+            string target = Path.GetFullPath(value);
+            if (!Directory.Exists(target)) throw new Exception("目录不存在：" + target);
+            var start = new ProcessStartInfo(target) { UseShellExecute = true, Verb = "open", WorkingDirectory = target };
+            // QA validates the same path and arguments without leaving Explorer windows.
+            if (smokeTest) { File.WriteAllText(Path.Combine(dataRoot, "native-qa", "opened-directory.txt"), target); return Task.FromResult(0); }
+            using (var process = Process.Start(start)) { }
+            Notify("已打开目录。"); return Task.FromResult(0);
         }
         void OpenExternal(string value) {
             Uri uri; if (!Uri.TryCreate(value, UriKind.Absolute, out uri) || uri.Scheme != "https") throw new Exception("仅支持 HTTPS 外部链接。");

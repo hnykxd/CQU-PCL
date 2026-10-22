@@ -9,7 +9,7 @@
 ```json
 {
   "displayName": "CQU PCL",
-  "clientId": "此处填写你自己Azure AppID"
+  "clientId": "720ac538-734d-4185-aa22-242223b9dfca"
 }
 ```
 
@@ -19,6 +19,7 @@ scope 为 `XboxLive.signin offline_access`。客户端 ID 是公共标识，不�
 
 2026-10-22 已用当前内置 ID 调用 Microsoft v2.0 设备码接口，返回 HTTP 200、验证网址 `https://www.microsoft.com/link`、5 秒轮询间隔和 900 秒有效期。脱敏结果保存在 `.build-cache/cqu-pcl-devicecode-check.json`，未保存设备码、用户验证码或令牌；此检查尚未完成真实账户授权。
 
+Azure 应用的受支持账户类型须包含个人 Microsoft 账户，并在「身份验证 → 高级设置」启用「允许公共客户端流」。现有设备码流使用 `consumers` 租户，无需添加客户端密钥或重定向 URI。
 
 开发时可以覆盖 ID：
 

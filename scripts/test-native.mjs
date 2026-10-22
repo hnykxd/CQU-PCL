@@ -10,6 +10,9 @@ if (!packaged) execFileSync(process.execPath, [path.join(root, 'scripts/build-na
 const data = await fs.mkdtemp(path.join(root, '.build-cache/native-qa-'));
 const id = 'native-qa-world';
 await fs.mkdir(path.join(data, 'instances', id, 'game'), { recursive: true });
+await fs.mkdir(path.join(data, 'instances', id, 'game', 'mods'), { recursive: true });
+const modZip = new AdmZip(); modZip.addFile('fabric.mod.json', Buffer.from(JSON.stringify({ id: 'native_qa', name: '本地测试模组', version: '1.2.3' })));
+await fs.writeFile(path.join(data, 'instances', id, 'game', 'mods', 'local-fixture.jar'), modZip.toBuffer());
 await fs.writeFile(path.join(data, 'launcher.json'), JSON.stringify({ settings: { source: 'bmclapi', memory: 4096, javaPath: '', playerName: 'Fixture', loginMode: 'offline', curseforgeKey: '', concurrency: 6 }, instances: [{ id, name: '原生界面测试世界', minecraft: '1.21.1', loader: 'fabric', loaderVersion: '0.16.0', edition: 'java', status: 'ready', mods: [], lastPlayed: '2026-10-21T02:30:00Z' }], selectedId: id }));
 const zip = new AdmZip(); zip.addFile('modrinth.index.json', Buffer.from(JSON.stringify({ formatVersion: 1, game: 'minecraft', name: '原生导入测试', versionId: '1.0', dependencies: { minecraft: '1.21.1', 'fabric-loader': '0.16.0' }, files: [] })));
 zip.writeZip(path.join(data, 'fixture.mrpack'));
