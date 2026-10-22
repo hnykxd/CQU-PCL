@@ -20,7 +20,7 @@ npm run dist
 
 `npm run dev` 启动 WPF 开发版；`npm run dist` 生成 `release/CQU-PCL-Native.exe`。直接运行 exe，旁边的 `.exe.config` 建议一起保留。程序包含界面、校徽、图标和引擎，首次启动会把 Node 解包到 `%LOCALAPPDATA%/CQU-PCL/runtime/`。
 
-Microsoft 正版登录使用发布者自己的 Azure 应用 **CQU PCL**（客户端 ID：`720ac538-734d-4185-aa22-242223b9dfca`），采用 OAuth 2.0 v2.0 设备码流：在系统浏览器输入验证码授权，切换页面后仍会继续等待；凭据使用 Windows DPAPI 加密保存。从旧版升级后，请重新登录以取得新应用的授权。账户页可获取、预览及保存官方皮肤和已拥有的披风。配置与验证说明见 [Microsoft 登录配置](docs/MICROSOFT_SETUP.md)。
+Microsoft 正版登录使用发布者自己的 Azure 应用 **CQU PCL**（客户端 ID：`你猜猜是什么`），采用 OAuth 2.0 v2.0 设备码流：在系统浏览器输入验证码授权，切换页面后仍会继续等待；凭据使用 Windows DPAPI 加密保存。从旧版升级后，请重新登录以取得新应用的授权。账户页可获取、预览及保存官方皮肤和已拥有的披风。配置与验证说明见 [Microsoft 登录配置](docs/MICROSOFT_SETUP.md)。
 
 ```powershell
 npm test
@@ -35,7 +35,7 @@ npm run test:single-instance
 
 架构、单实例保护、QA 范围与后续方向见 [原生重构说明](docs/NATIVE_REFACTOR.md)。
 
-校徽源图保存在 `public/brand/naiwa-university.jpg`。重新生成透明圆形标志与多尺寸 Windows 图标：
+程序源图保存在 `public/brand/naiwa-university.jpg`。重新生成透明圆形标志与多尺寸 Windows 图标：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-brand-assets.ps1 -Source "路径/校徽.jpg"
