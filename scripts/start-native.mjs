@@ -1,0 +1,10 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
+const binary = path.join(root, 'release/CQU-PCL-Native.exe');
+await fs.access(binary).catch(() => { throw new Error('请先运行 npm run dist 构建原生版，或 npm run dev 启动开发版。'); });
+const child = spawn(binary, [], { cwd: root, stdio: 'inherit', windowsHide: true });
+child.on('exit', code => process.exit(code || 0));
+child.on('error', error => { console.error(error.message); process.exit(1); });

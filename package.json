@@ -1,0 +1,30 @@
+{
+  "name": "cqu-pcl",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CQU PCL · Minecraft 世界与整合包启动器（Windows 原生版）",
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev-native.mjs",
+    "start": "node scripts/start-native.mjs",
+    "build:engine": "node scripts/build-engine.mjs",
+    "build:native": "npm run build:engine && node scripts/build-native.mjs",
+    "dist": "npm run build:native",
+    "test": "node --test tests/*.test.mjs",
+    "test:native": "node scripts/test-native.mjs",
+    "test:single-instance": "node scripts/test-single-instance.mjs"
+  },
+  "dependencies": {
+    "@xmcl/core": "2.16.2",
+    "@xmcl/installer": "6.3.6",
+    "adm-zip": "^0.5.16",
+    "express": "^5.1.0",
+    "undici": "^7.16.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.12"
+  },
+  "overrides": {
+    "@xmcl/unzip": "2.1.1"
+  }
+}
