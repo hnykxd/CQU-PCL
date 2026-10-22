@@ -16,7 +16,7 @@ npm run dist
 
 `npm run dev` 启动 WPF 开发版；`npm run dist` 生成 `release/CQU-PCL-Native.exe`。直接运行 exe，旁边的 `.exe.config` 建议一起保留。程序包含界面、校徽、图标和引擎，首次启动会把 Node 解包到 `%LOCALAPPDATA%/CQU-PCL/runtime/`。
 
-Microsoft 正版登录采用 OAuth 2.0 v2.0 设备码流：在系统浏览器输入验证码授权，切换页面后仍会继续等待；凭据使用 Windows DPAPI 加密保存。账户页可获取、预览及保存官方皮肤和已拥有的披风。配置与验证说明见 [Microsoft 登录配置](docs/MICROSOFT_SETUP.md)。
+Microsoft 正版登录使用发布者自己的 Azure 应用 **CQU PCL**（客户端 ID：`不告诉你，想知道可以抓包exe或用第三方公开client`），采用 OAuth 2.0 v2.0 设备码流：在系统浏览器输入验证码授权，切换页面后仍会继续等待；凭据使用 Windows DPAPI 加密保存。从旧版升级后，请重新登录以取得新应用的授权。账户页可获取、预览及保存官方皮肤和已拥有的披风。配置与验证说明见 [Microsoft 登录配置](docs/MICROSOFT_SETUP.md)。
 
 ```powershell
 npm test

@@ -4,15 +4,21 @@
 
 ## 当前配置
 
-`server/microsoft-app.json` 按项目要求内置以下公共客户端 ID：
+`server/microsoft-app.json` 内置发布者自己的 Azure 应用。发布者于 2026-10-22 确认该应用已通过 Minecraft 应用审核：
 
 ```json
-{ "clientId": "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb" }
+{
+  "displayName": "CQU PCL",
+  "clientId": "此处填写你自己Azure AppID"
+}
 ```
 
-scope 为 `XboxLive.signin offline_access`。客户端 ID 是公共标识，不需要客户端密钥。应用 ID 的提供方决定支持的登录方式、使用范围和生命周期；公开标识本身不代表任意第三方复用许可。Microsoft 授权页显示该 ID 注册的应用名称。正式发布应核对提供方的使用许可，并完成真实账户验证。
+scope 为 `XboxLive.signin offline_access`。客户端 ID 是公共标识，不需要客户端密钥。Microsoft 授权页的应用名称由 Azure 注册决定，应显示 **CQU PCL**；JSON 中的 `displayName` 用于记录应用信息，不会覆盖 Microsoft 授权页的名称。
 
-2026-10-21 实测该 ID 可从下面的 Microsoft v2.0 设备码接口取得验证码，返回 `https://www.microsoft.com/link`、5 秒轮询间隔和 900 秒有效期。同日由用户完成真实授权，Microsoft token、Xbox、XSTS、Minecraft token 和 Java 角色档案接口全部返回 HTTP 200。脱敏验证结果保存在 `.build-cache/device-login-result.json`；此测试未保存账户或令牌。
+2026-10-21 的真实账户验证使用的是旧第三方应用，其结果不能作为当前 CQU PCL 应用的在线验证结果。新应用仍需用真实账户验证 Microsoft → Xbox → XSTS → Minecraft 的完整认证链。
+
+2026-10-22 已用当前内置 ID 调用 Microsoft v2.0 设备码接口，返回 HTTP 200、验证网址 `https://www.microsoft.com/link`、5 秒轮询间隔和 900 秒有效期。脱敏结果保存在 `.build-cache/cqu-pcl-devicecode-check.json`，未保存设备码、用户验证码或令牌；此检查尚未完成真实账户授权。
+
 
 开发时可以覆盖 ID：
 
@@ -21,7 +27,7 @@ $env:CQU_PCL_MICROSOFT_CLIENT_ID = '实际公共客户端 ID'
 npm run dev
 ```
 
-正式发布修改 `server/microsoft-app.json` 后重新打包，玩家无需输入 ID。切换 ID 后，旧应用颁发的 refresh token 通常不能继续使用，应重新登录。
+正式发布修改 `server/microsoft-app.json` 后重新打包，玩家无需输入 ID。`CQU_PCL_MICROSOFT_CLIENT_ID` 环境变量优先于内置配置；使用正式应用时应移除旧的开发覆盖值。切换 ID 后，旧应用颁发的 refresh token 不能用于新应用，请在账户页重新登录；登录成功后会替换已保存的凭据。
 
 ## 协议实现
 
@@ -36,9 +42,9 @@ npm run dev
 
 ```powershell
 npm test
-npm run build
-npm run test:e2e
 npm run dist
+npm run test:native
+node scripts/test-native.mjs --packaged
 ```
 
 便携版输出到 `release/`，账户数据在 exe 旁的 `CQU-PCL-Data/`。原生版通过 DPAPI 加密保存 access token 和 refresh token；跨电脑或 Windows 用户移动数据后应重新登录。
